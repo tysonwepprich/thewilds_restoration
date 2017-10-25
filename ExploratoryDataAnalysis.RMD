@@ -1,0 +1,102 @@
+---
+title: "Exploratory analysis of butterfly counts"
+author: "Tyson Wepprich"
+date: "October 24, 2017"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    number_sections: false
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(stringr)
+library(viridis)
+library(vegan)
+theme_set(theme_bw(base_size = 14)) 
+```
+
+## Data preparation
+I combined all years into one datasheet for analysis and organized it for different analyses.
+
+```{r load data}
+dat <- read_csv("data/combinedData.csv")
+dat$species[grep(pattern = "Azure", x = dat$species)] <- "Azures"
+
+summary(dat)
+```
+
+```{r reorganize data, echo=FALSE}
+surveys <- dat %>% 
+  dplyr::select(Recorder, StartTime, EndTime, StartTemp, EndTemp, SheetName, Year) %>% 
+  mutate(Date = dmy(SheetName))
+surveys <- surveys[-which(duplicated(surveys) == TRUE), ]
+
+speciesnames <- sort(unique(dat$species))
+speciesnames <- speciesnames[-c(9, 10, 32, 43, 45, 47, 50, 51)] # remove unknown IDs
+
+
+splist <- list()
+for (i in 1:length(speciesnames)){
+  sp <- speciesnames[i]
+  spdat <- dat %>%
+    filter(species == sp) %>%
+    mutate(Date = dmy(SheetName)) %>% 
+    dplyr::select(-c(1:6)) %>% 
+    gather(key = "transect", value = "total", `1`:E) %>% 
+    full_join(surveys, by = c("Date", "Year"))
+
+  spdat$total[which(is.na(spdat$total))] <- 0
+  splist[[i]] <- spdat
+}
+alldat <- bind_rows(splist)
+
+yrdat <- alldat %>% 
+  group_by(species, Year) %>% 
+  summarise(AnnualCount = sum(total)) %>% 
+  group_by(species) %>% 
+  mutate(NumYear = length(which(AnnualCount > 0)),
+         MeanAnnCount = mean(AnnualCount)) %>% 
+  filter(NumYear >= 5, MeanAnnCount > 0)
+  
+tsplt <- ggplot(yrdat, aes(x = Year, y = AnnualCount, group = species)) +
+  geom_point() +
+  facet_wrap(~species, ncol = 4, scales = "free_y") +
+  ggtitle("Annual counts of species present in 5+ years")
+tsplt  
+```
+
+Ordination will look at species composition between years and transects.
+
+```{r basic ordination}
+
+orddat <- alldat %>% 
+  dplyr::select(Year, species, Date, transect, total) %>% 
+  group_by(Year, species, transect) %>% 
+  summarise(Total = sum(total)) 
+#make matrix of species abundances for ordination
+spec_site_mat <- data.frame(reshape::cast(orddat, transect + Year ~ species, value = "Total"))
+spec_site_mat$NA. <- NULL
+spec_site_mat[is.na(spec_site_mat)] <- 0
+
+ordmat <- spec_site_mat[, -c(1:2)]
+rares <- which(rowSums(ordmat)<5)
+ordmat <- ordmat[-rares, ]
+spec_site <- spec_site_mat[-rares, ]
+
+nmds_blfy <- metaMDS(ordmat, autotransform = TRUE)
+plot(nmds_blfy)
+
+test <- cbind(spec_site[, c(1:2)], nmds_blfy$points)
+
+ordplt <- ggplot(test, aes(x = MDS1, y = MDS2)) +
+  geom_point(aes(color = as.factor(transect)))
+ordplt
+
+
+```
+
